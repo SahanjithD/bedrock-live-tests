@@ -1,0 +1,37 @@
+# Copy to `Config.toml` and fill in. Config.toml is gitignored — never commit it.
+#
+# Every key below is read by the suite. If you add a key that isn't listed here,
+# nothing reads it.
+
+[dasun.bedrock_live_tests]
+
+# --- Credentials -----------------------------------------------------------
+# Supply BOTH kinds if you want the full run: cases G25-G28 pair each credential
+# type with each endpoint, and Mantle-with-SigV4 (G27) is the path that has never
+# been exercised. A case whose credential is missing reports SKIP, not FAIL.
+
+# SigV4 static / STS keys.
+accessKeyId = ""
+secretAccessKey = ""
+sessionToken = ""          # optional; leave "" for long-term keys
+
+# Bedrock API key (bearer). Console > Bedrock > API keys > long-term.
+bedrockApiKey = ""
+
+# --- Run control -----------------------------------------------------------
+
+# Hard cap on output tokens per chat call. Keep it small; the assertions check
+# structure, not content. 24 keeps the whole run well under a dollar.
+maxTokens = 24
+
+# true constructs every provider but makes NO network call. RUN THIS FIRST — it
+# proves your config parses and surfaces every construction-time failure for free.
+dryRun = false
+
+# Filter. "" runs everything; "D", "G" or "F" runs one block; "G12" runs one case.
+# Start with only = "G1" to confirm credentials before spending the full run.
+only = ""
+
+# true prints the case list and the coverage audit, then exits without
+# constructing or calling anything.
+listOnly = false

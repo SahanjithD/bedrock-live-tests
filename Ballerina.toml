@@ -1,0 +1,17 @@
+[package]
+org = "dasun"
+name = "bedrock_live_tests"
+version = "0.1.0"
+distribution = "2201.12.0"
+
+# The module under test. Publish it locally first:
+#   cd <module repo>/ballerina && bal pack && bal push --repository=local
+# See RUNBOOK.md step 1.
+[[dependency]]
+org = "ballerinax"
+name = "ai.aws.bedrock"
+version = "0.1.0"
+repository = "local"
+
+[build-options]
+observabilityIncluded = false
