@@ -40,6 +40,16 @@ public type Case record {|
     # Pass a stop sequence. The Responses dialect has no stop parameter, so the
     # module must REFUSE rather than silently drop it (D4).
     boolean withStop = false;
+    # REQUIRED for FAIL_OFFLINE: substrings the refusal message must ALL contain,
+    # matched case-insensitively.
+    #
+    # Without this the FAIL_OFFLINE branch passed on ANY construction error, so a
+    # region typo, a renamed vendor class, or a deleted guard all "proved" the
+    # case. That is the same defect the RUNBOOK records as fixed for D6 — only the
+    # routing half was ever fixed; this is the other half. A FAIL_OFFLINE case with
+    # an empty list is now itself a FAIL, so the guard cannot be skipped by
+    # forgetting to fill it in.
+    string[] expectMessage = [];
     # Printed with the verdict so the terminal explains itself.
     string why;
 |};
@@ -77,6 +87,8 @@ public isolated function blockD() returns Case[] {
             family: "MANTLE",
             expectedFamily: "MANTLE",
             expect: FAIL_OFFLINE,
+            // resolver.bal:197 — `model '<id>' is not available on Mantle`.
+            expectMessage: ["anthropic.claude-sonnet-4-6", "not available on mantle"],
             why: "runtime-only model forced to Mantle -> 'not available on Mantle'"
         },
         {
@@ -118,6 +130,10 @@ public isolated function blockD() returns Case[] {
             expectedFamily: "MANTLE",
             expect: FAIL_OFFLINE,
             withGuardrail: true,
+            // provider_common.bal:188 — guardMantleGuardrail. Naming ApplyGuardrail
+            // is the POINT of the case: the error must tell the caller what to use
+            // instead, so the substring is asserted, not just the failure.
+            expectMessage: ["applyguardrail", "not supported on the mantle route"],
             why: "guardrail on a Mantle route -> construction error naming ApplyGuardrail"
         },
         {
@@ -130,6 +146,10 @@ public isolated function blockD() returns Case[] {
             family: "INVOKE",
             expectedFamily: "INVOKE",
             expect: FAIL_OFFLINE,
+            // resolver.bal:85. Without this list D6 passed on ANY Anthropic
+            // construction error — the exact regression the RUNBOOK records as
+            // fixed, of which only the routing half actually was.
+            expectMessage: ["imported-model/", "modelschema"],
             why: "imported-model/ ARN without modelSchema -> construction error"
         },
         // D7 REMOVED. Its premise was wrong: `CohereEmbeddingConfig.inputType`
@@ -146,6 +166,10 @@ public isolated function blockD() returns Case[] {
             family: "MANTLE",
             expectedFamily: "MANTLE",
             expect: FAIL_OFFLINE,
+            // endpoint.bal:44. `aws-cn` is what partitionForRegion("cn-north-1")
+            // returns (resolver.bal:240) — asserting it proves the PARTITION guard
+            // fired, not merely that some error happened in a bad region.
+            expectMessage: ["not available on partition", "aws-cn"],
             why: "Mantle on a non-api.aws partition -> construction error"
         }
     ];

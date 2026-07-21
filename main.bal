@@ -13,8 +13,24 @@ import ballerina/io;
 # Print the plan without constructing or calling anything.
 configurable boolean listOnly = false;
 
+# Treat SKIPs as failure for the exit code. On by default: a skipped case tested
+# nothing, and the whole point of the exit code is that "clean" must mean "actually
+# ran and actually passed". Set false only when you deliberately expect skips (e.g.
+# you have SigV4 keys but no Bedrock API key, so the `bearer` cases cannot run).
+configurable boolean strict = true;
+
 public function main() returns error? {
-    io:println(auditNecessary());
+    // The audit is a GATE, not a printout. It reports unservable picks and codecs
+    // no case reaches — exactly the rot it exists to detect. It used to print and
+    // be ignored, so a case list that had stopped covering a codec still ran a
+    // full green suite.
+    string audit = auditNecessary();
+    io:println(audit);
+    if audit.startsWith("Block G audit FAILED") {
+        return error("Block G audit failed — the case list no longer covers what it " +
+            "claims. Fix the list before running; results would not mean what the " +
+            "case descriptions say.");
+    }
     io:println("");
 
     if listOnly {
@@ -37,5 +53,18 @@ public function main() returns error? {
         io:println("DRY RUN - providers are constructed but no request is sent.");
         io:println("");
     }
-    check runAll();
+
+    Summary s = check runAll();
+
+    // Non-zero exit on anything that is not a clean, complete pass. `bal run`
+    // previously exited 0 regardless of the result, so nothing downstream could
+    // gate on this suite and a human had to read the terminal to learn the answer.
+    if s.nFail > 0 {
+        return error(string `${s.nFail} case(s) FAILED.`);
+    }
+    if strict && s.nSkip > 0 && !dryRun {
+        return error(string `${s.nSkip} case(s) SKIPPED — they tested nothing. ` +
+            string `Fix the setup, or pass -Cdasun.bedrock_live_tests.strict=false ` +
+            string `if the skips are expected.`);
+    }
 }

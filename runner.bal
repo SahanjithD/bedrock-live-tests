@@ -45,8 +45,19 @@ isolated function maxTokensFor(string entry) returns int {
 # Construction-time failures (Block D) are fully visible here, for free.
 configurable boolean dryRun = false;
 
-# Filter: "" runs everything, "G" runs a block, "G12" runs a single case.
+# Filter: "" runs everything, "G" runs a block, "G12" runs a single case, and a
+# comma list ("G1,G2,G3") runs exactly those. Whitespace around entries is ignored.
 configurable string only = "";
+
+# Run a WINDOW of the selected cases: skip the first `offset`, then run at most
+# `limit`. `limit = 0` means no limit. This is how you work through the suite a
+# few cases at a time without hand-listing ids:
+#   offset=0  limit=5   -> cases 1-5
+#   offset=5  limit=5   -> cases 6-10
+# The window is applied AFTER `only`, over the run order D -> G -> F, which is
+# stable because all three block functions return literal lists.
+configurable int offset = 0;
+configurable int 'limit = 0;
 
 // ---------------------------------------------------------------------------
 // Credentials.
@@ -80,6 +91,18 @@ final readonly & bedrock:StaticCredentials OFFLINE_PLACEHOLDER = {
     accessKeyId: "AKIAOFFLINEGUARDONLY",
     secretAccessKey: "not-a-real-key-this-case-never-reaches-the-network"
 };
+
+# Why a case could not run at all. A DISTINCT TYPE, not an error whose message
+# starts with "SKIP: ".
+#
+# The old scheme encoded skip-ness in an error string and recovered it downstream
+# with `msg.startsWith("SKIP: ")`. That silently reclassified any module error
+# beginning with those six characters from FAIL to SKIP, and coupled two files
+# through a string literal with no shared constant. A skip is not an error; it now
+# has its own type and cannot be forged by message text.
+public type Skip record {|
+    string reason;
+|};
 
 isolated function credentialsFor(string auth) returns bedrock:BedrockCredentials|string {
     match auth {
@@ -190,7 +213,7 @@ isolated function vendorOf(string wireId) returns string {
 #
 # The wire id (geo prefix included) is passed straight through as a `string`, which
 # is the documented escape hatch for any model not in a vendor enum.
-isolated function providerFor(Case c) returns ai:ModelProvider|ai:Error {
+isolated function providerFor(Case c) returns ai:ModelProvider|Skip|ai:Error {
     bedrock:BedrockCredentials creds;
     bedrock:BedrockCredentials|string resolved = credentialsFor(c.auth);
     if resolved is string {
@@ -198,7 +221,7 @@ isolated function providerFor(Case c) returns ai:ModelProvider|ai:Error {
         if c.expect == FAIL_OFFLINE {
             creds = OFFLINE_PLACEHOLDER;
         } else {
-            return error ai:Error(string `SKIP: ${resolved}`);
+            return {reason: resolved};
         }
     } else {
         creds = resolved;
@@ -287,10 +310,13 @@ public type Result record {|
     # First ~200 chars of the model's reply, or the error. Always redacted.
     string evidence;
     string why;
+    # True only if this case actually sent a request to AWS. Offline guards and
+    # skips are false, which is how `nLive` can be 0 on an all-PASS run.
+    boolean live = false;
 |};
 
 isolated function mkResult(string id, string entry, string detail, Verdict v, int ms,
-        string evidence, string why) returns Result {
+        string evidence, string why, boolean live = false) returns Result {
     string e = redact(evidence);
     return {
         id,
@@ -299,7 +325,8 @@ isolated function mkResult(string id, string entry, string detail, Verdict v, in
         verdict: v,
         ms,
         evidence: e.length() > 240 ? e.substring(0, 240) + "..." : e,
-        why
+        why,
+        live
     };
 }
 
@@ -312,8 +339,18 @@ isolated function nowMs() returns int {
 // Reporting.
 // ---------------------------------------------------------------------------
 
-isolated function selected(string id, string block) returns boolean
-    => only == "" || only == block || only == id;
+isolated function selected(string id, string block) returns boolean {
+    if only == "" {
+        return true;
+    }
+    foreach string raw in re `,`.split(only) {
+        string want = raw.trim();
+        if want != "" && (want == block || want == id) {
+            return true;
+        }
+    }
+    return false;
+}
 
 isolated function printResult(Result r) {
     string mark = r.verdict == PASS ? "PASS" : (r.verdict == SKIP ? "SKIP" : "FAIL");
@@ -326,11 +363,20 @@ isolated function printResult(Result r) {
 
 # Write a markdown report to results/. Credentials are already redacted by
 # `record`, but `redact` is applied again here as a belt-and-braces pass.
-isolated function writeReport(Result[] results) returns error? {
+isolated function writeReport(Result[] results, Summary s) returns error? {
+    // The totals go in the REPORT, not just the terminal. Previously the header
+    // said only "Cases: 60", so a reader skimning the markdown saw 60 rows and no
+    // indication that 56 of them never ran.
+    string verdictLine = s.nSkip > 0
+        ? string `**PASS ${s.nPass} / FAIL ${s.nFail} / SKIP ${s.nSkip}** — ` +
+            string `${s.nSkip} case(s) did NOT run. This report does not cover them.`
+        : string `**PASS ${s.nPass} / FAIL ${s.nFail} / SKIP 0**`;
     string[] lines = [
         "# Bedrock live run",
         "",
-        string `Cases: ${results.length()}`,
+        string `Cases selected: ${results.length()}`,
+        verdictLine,
+        string `Live calls actually made: ${s.nLive}`,
         "",
         "| id | entry | detail | verdict | ms | evidence |",
         "| --- | --- | --- | --- | --- | --- |"
@@ -345,10 +391,21 @@ isolated function writeReport(Result[] results) returns error? {
     check io:fileWriteLines("results/run.md", lines);
 }
 
-isolated function summarise(Result[] results) {
+public type Summary record {|
+    int nPass;
+    int nFail;
+    int nSkip;
+    # Cases that actually crossed the network. A run can be all-PASS with this at
+    # zero (every Block D guard passes offline) — which is NOT evidence that AWS
+    # integration works.
+    int nLive;
+|};
+
+isolated function tally(Result[] results) returns Summary {
     int nPass = 0;
     int nFail = 0;
     int nSkip = 0;
+    int nLive = 0;
     foreach Result r in results {
         match r.verdict {
             PASS => {
@@ -361,10 +418,42 @@ isolated function summarise(Result[] results) {
                 nSkip += 1;
             }
         }
+        if r.live {
+            nLive += 1;
+        }
     }
+    return {nPass, nFail, nSkip, nLive};
+}
+
+# Print the verdict. SKIP is now as loud as FAIL.
+#
+# The old summary printed SKIP third on one unadorned line and reserved the only
+# warning banner for FAIL. A run with no credentials therefore printed
+# `PASS 0 FAIL 0 SKIP 60` and read as clean — that exact run is what was committed
+# to results/run.md. A skipped case tested NOTHING, so it gets a banner too.
+isolated function summarise(Result[] results, Summary s) {
     io:println("");
-    io:println(string `PASS ${nPass}   FAIL ${nFail}   SKIP ${nSkip}   (of ${results.length()})`);
-    if nFail > 0 {
-        io:println("Failures above. Each prints the expectation it broke.");
+    io:println(string `PASS ${s.nPass}   FAIL ${s.nFail}   SKIP ${s.nSkip}   ` +
+        string `(of ${results.length()} selected)`);
+    io:println(string `Live calls that reached AWS: ${s.nLive}`);
+
+    if s.nFail > 0 {
+        io:println("");
+        io:println("!! FAILURES above. Each prints the expectation it broke.");
+    }
+    if s.nSkip > 0 {
+        io:println("");
+        io:println(string `!! ${s.nSkip} CASE(S) SKIPPED — these tested NOTHING.`);
+        io:println("   A skip is not a pass. Common cause: Config.toml is missing or");
+        io:println("   has no credentials, so the run looks clean while proving nothing.");
+        io:println("   Fix the setup and re-run before trusting this result.");
+    }
+    if s.nLive == 0 && !dryRun {
+        io:println("");
+        io:println("!! ZERO live calls were made. Nothing was verified against AWS.");
+    }
+    if s.nFail == 0 && s.nSkip == 0 && s.nLive > 0 {
+        io:println("");
+        io:println("All selected cases ran and passed.");
     }
 }

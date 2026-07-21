@@ -13,6 +13,31 @@
 //
 // Region/CRIS coverage is folded onto cases that must exist anyway rather than
 // spent on dedicated rows.
+//
+// ---------------------------------------------------------------------------
+// WHAT A BLOCK G "PASS" ACTUALLY PROVES — read this before trusting a green run.
+// ---------------------------------------------------------------------------
+// A PASS here means exactly three things:
+//   1. the provider constructed without error,
+//   2. AWS accepted the request and returned 2xx,
+//   3. the response decoded into a non-empty reply.
+//
+// It does NOT prove any claim about REQUEST BYTES. There is no echo server and no
+// transport instrumentation (RUNBOOK.md §"No echo server"), so every `covers`
+// string below that describes wire content — a header vs a body field, a codec
+// dialect, a signing scope, an id substitution, a surviving CRIS prefix — is a
+// statement of INTENT describing which module path the case is meant to walk. It
+// is not an assertion. Those claims are verifiable only in the module's own
+// offline codec tests, where the request is inspectable.
+//
+// Nor is `expectedFamily` checked: the module's `resolveRoute` is module-private
+// and no provider exposes its resolved route, so the harness computes the expected
+// family for DISPLAY only. RESOLVER_PICKS therefore prove "an AUTO call worked",
+// not "AUTO landed where Amendment 2 says". Verifying that needs either a public
+// accessor on the provider or a module-side test.
+//
+// This is a deliberate boundary, not an oversight — but it was previously stated
+// as the opposite, so a reader took each `covers` line as a verified result.
 
 # A curated case, with the justification for its existence.
 type Pick record {|
@@ -318,8 +343,19 @@ final readonly & Pick[] BREADTH_PICKS = [
         model: "mythos-5",
         region: "us-east-1",
         family: "MANTLE",
-        covers: "mythos-5 quirk: temperature MUST be 1.0 and top_k is unsupported — " +
-            "a naive default-params call is expected to be REJECTED here"
+        // The old `covers` said "a naive default-params call is expected to be
+        // REJECTED here" while `expect` defaulted to PASS_LIVE — and the runner
+        // reads forceTemperature: 1.0 from the capability table, so the call is
+        // not naive and is not rejected. The prose and the expectation
+        // contradicted each other; the expectation is the correct one.
+        //
+        // The rejection this describes is NOT currently tested. Testing it needs a
+        // second pick that deliberately sends a non-compliant temperature, which
+        // the Pick record cannot yet express (temperature is per-MODEL, not
+        // per-case). Left as a known gap rather than a misleading passing case.
+        covers: "mythos-5 reachable on Mantle at its REQUIRED temperature of 1.0 " +
+            "(capability.bal forceTemperature). Proves the constrained-parameter " +
+            "path round-trips; does NOT prove a non-compliant value is rejected."
     },
     {
         entry: "chat",
@@ -470,8 +506,16 @@ public isolated function blockG() returns Case[] {
         // model under a different id, the MODULE performs that substitution from
         // its MANTLE_CAPABLE table, which is keyed by the runtime id. Passing the
         // Mantle id here would break that lookup — the caller is not meant to know
-        // about it. `m.mantleId` therefore describes what we EXPECT ON THE WIRE,
-        // which is asserted by the echo server, not by what we send.
+        // about it.
+        //
+        // !! `m.mantleId` describes what we EXPECT on the wire. IT IS NOT ASSERTED.
+        // This comment previously claimed "asserted by the echo server"; there is
+        // no echo server in this repo and RUNBOOK.md says one was deliberately
+        // never built (it would need a base-URL override the module does not
+        // expose). A Block G PASS therefore means: the provider constructed, AWS
+        // accepted the request, and a non-empty response decoded. It does NOT mean
+        // the bytes on the wire matched the `covers` description. Those belong in
+        // the module's own offline codec tests. See the UNVERIFIED note at the top.
         string wireId = p.geo == "" ? m.id : string `${p.geo}.${m.id}`;
         cases.push({
             id: string `G${n}`,

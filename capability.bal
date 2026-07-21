@@ -245,6 +245,10 @@ public type EmbedCap record {|
     string id;
     # Wire batch limit: Titan 1, Cohere 96.
     int maxBatchSize;
+    # Vector length the model returns at its DEFAULT setting, per the card. The
+    # driver asserts this exactly. Previously it only checked "length > 0", so a
+    # truncated response or a silently-substituted model passed.
+    int dim;
     string[] inRegion = [];
     string? quirk = ();
     string card;
@@ -256,6 +260,10 @@ public final readonly & map<EmbedCap> EMBED_MODELS = {
     "titan-v2": {
         id: "amazon.titan-embed-text-v2:0",
         maxBatchSize: 1,
+        // Titan v2 supports 1024 / 512 / 256; 1024 is the default and the module
+        // does not override it. If the module ever exposes `dimensions`, this row
+        // must move with it.
+        dim: 1024,
         inRegion: ["us-east-1", "us-east-2", "us-west-2", "us-gov-east-1", "us-gov-west-1",
             "ca-central-1", "eu-central-1", "eu-central-2", "eu-north-1", "eu-south-1",
             "eu-south-2", "eu-west-1", "eu-west-2", "eu-west-3", "ap-northeast-1",
@@ -270,6 +278,8 @@ public final readonly & map<EmbedCap> EMBED_MODELS = {
     "cohere-en-v3": {
         id: "cohere.embed-english-v3",
         maxBatchSize: 96,
+        // Cohere embed-english-v3 is fixed at 1024; it has no dimension option.
+        dim: 1024,
         inRegion: ["us-east-1", "us-west-2", "ca-central-1", "eu-central-1", "eu-west-1",
             "eu-west-2", "eu-west-3", "ap-northeast-1", "ap-south-1", "ap-southeast-1",
             "ap-southeast-2", "sa-east-1"],

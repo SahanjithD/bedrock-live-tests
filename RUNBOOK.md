@@ -58,8 +58,12 @@ This constructs every provider and makes **zero network calls**. It proves your
 config parses and surfaces every construction-time failure for free. Expect:
 
 ```
-PASS 4   FAIL 0   SKIP 56   (of 60)
+PASS 4   FAIL 0   SKIP 56   (of 60 selected)
+Live calls that reached AWS: 0
 ```
+
+The SKIP banner fires here — that is correct for a dry run and does not affect the
+exit code. `strict` skip-checking is suppressed under `dryRun`.
 
 The 4 passes are Block D construction guards firing correctly, and each prints the
 module's own error text as evidence. If any Block D case FAILs here, stop — a guard
@@ -76,15 +80,83 @@ dry run on a machine with no AWS account at all.
 bal run                                              # everything
 bal run -- -Cdasun.bedrock_live_tests.only=D         # one block
 bal run -- -Cdasun.bedrock_live_tests.only=G12       # one case
+bal run -- -Cdasun.bedrock_live_tests.only=G1,G2,G3  # a specific few
 bal run -- -Cdasun.bedrock_live_tests.only=F         # embeddings only
 ```
 
 Start with `only=G1` (one Converse chat) to confirm credentials work before
 spending the full run.
 
-Results print live and land in `results/run.md`, which is gitignored.
+### Running a few at a time
 
-## 5. Reading a failure
+`offset` and `limit` take a window of the selected cases, in the fixed run order
+D → G → F. This is the way to work through the suite in small batches without
+listing ids by hand:
+
+```bash
+bal run -- -Cdasun.bedrock_live_tests.offset=0  -Cdasun.bedrock_live_tests.limit=5   # 1-5
+bal run -- -Cdasun.bedrock_live_tests.offset=5  -Cdasun.bedrock_live_tests.limit=5   # 6-10
+bal run -- -Cdasun.bedrock_live_tests.offset=10 -Cdasun.bedrock_live_tests.limit=5   # 11-15
+```
+
+The window applies **after** `only`, so you can page within one block:
+`only=G offset=0 limit=5` gives G1–G5. `bal run -- -Cdasun.bedrock_live_tests.listOnly=true`
+prints the full ordered list so you can map positions to ids.
+
+### Exit codes
+
+`bal run` exits **non-zero** if anything failed, and — by default — also if
+anything was **skipped**. A skipped case tested nothing, so a run full of skips is
+not a pass. If skips are expected (say you have SigV4 keys but no Bedrock API key,
+so G26/G28 cannot run), silence that with:
+
+```bash
+bal run -- -Cdasun.bedrock_live_tests.strict=false
+```
+
+Failures always exit non-zero regardless of `strict`.
+
+Results print live and land in `results/run.md`, which is gitignored. The report
+header carries the PASS/FAIL/SKIP totals and the number of calls that actually
+reached AWS.
+
+## 5. What a PASS means — and what it does not
+
+Read this before reporting a green run as "the module works".
+
+**A green run is not automatically a meaningful run.** Check three numbers, in this
+order:
+
+1. **SKIP count.** A skip ran nothing. The most common cause is a missing or empty
+   `Config.toml`, which skips all 56 live cases while the terminal shows no
+   failures. The suite now prints a banner and exits non-zero for this, but read
+   the number yourself.
+2. **"Live calls that reached AWS".** This can be `0` on an all-PASS run — the
+   Block D guards all pass offline. Zero live calls means nothing was verified
+   against AWS at all.
+3. **PASS count**, last.
+
+**What a Block G PASS asserts:** the provider constructed, AWS accepted the request
+and returned 2xx, and a non-empty response decoded.
+
+**What it does not assert:**
+
+| Not checked | Why |
+| --- | --- |
+| Request bytes on the wire | There is no echo server (see *No echo server*, below). Every `covers` string describing a header, body field, codec dialect, signing scope or id substitution states **intent** — which module path the case walks — not a verified result. Those belong in the module's offline codec tests. |
+| `expectedFamily` | `resolveRoute` is module-private and no provider exposes its resolved route. The harness computes the expected family for **display only**, so `AUTO->MANTLE` in the output is what we predicted, not what happened. RESOLVER_PICKS prove "an AUTO call worked", not "AUTO landed correctly". |
+| Answer correctness (`chat`) | Only non-emptiness. `"I cannot help with that"` passes. Deliberate — models are non-deterministic and this is a codec suite. |
+| Field *values* (`generate`) | Only that the record parsed and two string fields are non-blank. A wrong city passes. |
+| Request **count** (`embed`) | Not observable without instrumenting the transport. `expectedRequests` documents intent. |
+
+**What is genuinely verified:** Block D guards now assert the *specific* error text
+(`expectMessage`), so a different construction failure no longer passes. Block F
+verifies embedding **order** against singly-embedded reference vectors and asserts
+the vector **dimension**. `agent` requires the exact product `14503747` in the
+answer — strong evidence the tool ran, though a model that multiplies correctly on
+its own would also pass.
+
+## 6. Reading a failure
 
 Every non-pass prints the expectation it broke and the evidence:
 
@@ -102,7 +174,7 @@ Before filing a module bug, rule out these three:
 | one model 4xx on a *bare* id | that region is In-Region **NO** — check its row in `capability.bal` |
 | `mythos-5` denied | Preview/Beta model; your account may not be entitled |
 
-## Safety
+## 7. Safety
 
 - **Credentials are never printed or written.** `redact()` in `runner.bal` strips
   every configured secret from all output, including error messages — AWS SigV4
